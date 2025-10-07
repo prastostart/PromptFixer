@@ -1,0 +1,12 @@
+round,prompt,score
+Identify text as positive or negative:,1.0,1
+Identify text as positive or negative:,1.0,2
+Identify text as positive or negative: Explain step by step. Explain step by step.,1.0,3
+Identify text as positive or negative:,1.0,1
+Identify text as positive or negative:,1.0,2
+Identify text as positive or negative: Explain step by step. Explain step by step.,1.0,3
+2025-10-07T05:46:28.056962,1,1,Classify this text as positive or negative.,initial,Classify this text as positive or negative.,0.8220424574749322,
+2025-10-07T05:46:32.540990,2,2,Classify this text as positive or negative. (refined),reflection,Classify this text as positive or negative. (refined),0.639803071911388,
+2025-10-07T05:46:34.718263,3,3,Classify this text as positive or negative. (refined) (refined),reflection,Classify this text as positive or negative. (refined) (refined),0.24919733598404636,
+2025-10-07T05:46:41.250810,4,4,Classify this text as positive or negative. (refined) (refined) (refined),reflection,Classify this text as positive or negative. (refined) (refined) (refined),0.11212714757846176,
+2025-10-07T05:46:42.439336,5,5,Classify this text as positive or negative. (refined) (refined) (refined) (refined),reflection,Classify this text as positive or negative. (refined) (refined) (refined) (refined),0.9860517782445193,
