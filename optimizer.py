@@ -1,33 +1,38 @@
 # optimizer.py
 
-import random
-from logger import log_prompt
 from models import TextModel
+from logger import log_prompt
+import random
 
 class PromptOptimizer:
-    def __init__(self, model_name="microsoft/phi-2"):
+    def __init__(self, model_name="mosaicml/mpt-7b-instruct"):
         self.model_wrapper = TextModel(model_name)
         self.device = self.model_wrapper.device
 
     def score_prompt(self, prompt, ground_truth, model_output):
-        """Dummy scoring function (replace later with real metrics)."""
-        return random.uniform(0, 1)
+        """
+        Use simple accuracy: 1 if model output contains ground_truth, else 0.
+        """
+        return 1.0 if ground_truth.lower() in model_output.lower() else 0.0
 
     def reflect_on_prompt(self, prompt, score, feedback=""):
-        """Rephrase the prompt based on reflection."""
-        # Simple reflection: append feedback to the prompt
-        return prompt + " " + feedback if feedback else prompt + " (refined)"
+        """
+        LLM-based reflection/rephrasing.
+        For now, we append a simple instruction for refinement.
+        """
+        reflection_instruction = "Refine this prompt for clarity and accuracy."
+        full_prompt = f"{prompt} {reflection_instruction}"
+        new_prompt = self.model_wrapper.generate(full_prompt, max_length=100)
+        return new_prompt
 
     def generate_output(self, prompt, input_text=""):
-        """Generate model output for a given prompt."""
         full_prompt = prompt + " " + input_text if input_text else prompt
         return self.model_wrapper.generate(full_prompt)
 
     def optimize(self, initial_prompt, ground_truth, num_rounds=5):
-        """Optimize the prompt over multiple rounds."""
         current_prompt = initial_prompt
         best_prompt = current_prompt
-        best_score = 0
+        best_score = -1
 
         for round_num in range(1, num_rounds + 1):
             # Candidate transformation
@@ -37,22 +42,23 @@ class PromptOptimizer:
             output = self.generate_output(current_prompt)
             score = self.score_prompt(current_prompt, ground_truth, output)
 
-            # Log the prompt evaluation
-            candidate_id = round_num  # simple ID for each candidate
+            # Log evaluation
+            candidate_id = round_num
             parent_prompt = current_prompt
             log_prompt(round_num, candidate_id, parent_prompt, transformation, current_prompt, score)
 
-            # Reflect to improve prompt
+            # Rephrase prompt using LLM
             current_prompt = self.reflect_on_prompt(current_prompt, score)
 
-            # Update best prompt if score improves
+            # Update best prompt
             if score > best_score:
                 best_score = score
                 best_prompt = current_prompt
 
             print(f"=== Round {round_num} ===")
             print(f"Prompt: {current_prompt}")
-            print(f"Score: {score:.3f}")
+            print(f"Output: {output}")
+            print(f"Score: {score}")
 
         return best_prompt, best_score
 

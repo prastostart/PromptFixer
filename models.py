@@ -2,33 +2,42 @@
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import os
 
 class TextModel:
-    def __init__(self, model_name="microsoft/phi-2"):
+    def __init__(self, model_name="mosaicml/mpt-1b-redpajama-200b-dolly"):
         print(f"Loading model: {model_name}")
-        # Set device: MPS if available, otherwise CPU
+
+        # Device: MPS if available, else CPU
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
         
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-        # Load model in full precision for stability
-        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
-        print(f"Model loaded on device: {self.device} (float32 for stability)")
+        # Ensure offload folder exists
+        offload_dir = "./offload"
+        os.makedirs(offload_dir, exist_ok=True)
+
+        # Load model safely with device_map
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            dtype=torch.float16,      # float16 for reduced memory
+            device_map="auto",        # automatically map layers to available devices
+            offload_folder=offload_dir,
+            trust_remote_code=True
+        )
+
+        print(f"Model loaded on device: {self.device} (float16 for stability)")
 
     def generate(self, prompt, max_length=100):
-        # Tokenize input and send tensors to the correct device
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        
-        # Generate output safely
+        max_new_tokens = 150  # ✅ define default generation length
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_length=max_length,
+                max_new_tokens=max_new_tokens,
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id
             )
-        
-        # Decode and return
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
