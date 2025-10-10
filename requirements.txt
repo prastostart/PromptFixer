@@ -3,3 +3,4 @@ torch
 scikit-learn
 sentence-transformers
 faiss-cpu
+prettytable

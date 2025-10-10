@@ -1,64 +1,79 @@
-# optimizer.py
-
 from models import TextModel
-from logger import log_prompt
+import pandas as pd
 import random
+import re
 
 class PromptOptimizer:
-    def __init__(self, model_name="mosaicml/mpt-7b-instruct"):
+    def __init__(self, model_name="mosaicml/mpt-1b-redpajama-200b-dolly"):
         self.model_wrapper = TextModel(model_name)
         self.device = self.model_wrapper.device
 
-    def score_prompt(self, prompt, ground_truth, model_output):
+    def score_bcr(self, output_text):
         """
-        Use simple accuracy: 1 if model output contains ground_truth, else 0.
+        A very simple proxy for 'BCR' (Balance-Context Relevance).
+        Higher score if answer includes financial keywords.
         """
-        return 1.0 if ground_truth.lower() in model_output.lower() else 0.0
+        finance_keywords = ["market", "stock", "investment", "inflation", "returns", "risk", "interest", "economy"]
+        matches = sum(1 for word in finance_keywords if word in output_text.lower())
+        return round(min(1.0, matches / len(finance_keywords) * 2), 3)
 
-    def reflect_on_prompt(self, prompt, score, feedback=""):
+    def identify_root_cause(self, output_text):
         """
-        LLM-based reflection/rephrasing.
-        For now, we append a simple instruction for refinement.
+        Heuristic-based root cause analysis — very simplified.
         """
-        reflection_instruction = "Refine this prompt for clarity and accuracy."
+        if len(output_text.split()) < 30:
+            return "Too brief or lacks explanation"
+        elif not any(word in output_text.lower() for word in ["example", "for instance", "e.g."]):
+            return "Missing illustrative example"
+        elif "investment" not in output_text.lower():
+            return "Key finance concept missing"
+        else:
+            return "Lacks clarity or precision"
+
+    def reflect_on_prompt(self, prompt, root_cause):
+        """
+        Self-reflection logic — use root cause to generate refined prompt.
+        """
+        reflection_instruction = f"Refine this financial prompt to fix the issue: {root_cause}."
         full_prompt = f"{prompt} {reflection_instruction}"
-        new_prompt = self.model_wrapper.generate(full_prompt, max_length=100)
-        return new_prompt
+        new_prompt = self.model_wrapper.generate(full_prompt, max_new_tokens=60)
+        return new_prompt.strip()
 
-    def generate_output(self, prompt, input_text=""):
-        full_prompt = prompt + " " + input_text if input_text else prompt
-        return self.model_wrapper.generate(full_prompt)
+    def optimize(self, initial_prompt, num_rounds=1):
+        all_data = []
+        best_prompt = initial_prompt
+        best_score = 0.0
 
-    def optimize(self, initial_prompt, ground_truth, num_rounds=5):
-        current_prompt = initial_prompt
-        best_prompt = current_prompt
-        best_score = -1
+        # Generate LLM output for initial prompt
+        initial_output = self.model_wrapper.generate(initial_prompt)
+        initial_score = self.score_bcr(initial_output)
+        print(f"Initial BCR Score: {initial_score}")
 
-        for round_num in range(1, num_rounds + 1):
-            # Candidate transformation
-            transformation = "initial" if round_num == 1 else "reflection"
+        # Root cause
+        root_cause = self.identify_root_cause(initial_output)
 
-            # Generate output and score
-            output = self.generate_output(current_prompt)
-            score = self.score_prompt(current_prompt, ground_truth, output)
+        # Generate 10 refined prompts
+        refined_prompts = []
+        for i in range(10):
+            refined = self.reflect_on_prompt(initial_prompt, root_cause)
+            refined_prompts.append(refined)
 
-            # Log evaluation
-            candidate_id = round_num
-            parent_prompt = current_prompt
-            log_prompt(round_num, candidate_id, parent_prompt, transformation, current_prompt, score)
-
-            # Rephrase prompt using LLM
-            current_prompt = self.reflect_on_prompt(current_prompt, score)
-
-            # Update best prompt
+        # Evaluate each refined prompt
+        for idx, prompt in enumerate(refined_prompts, start=1):
+            output = self.model_wrapper.generate(prompt)
+            score = self.score_bcr(output)
+            root_fixed = root_cause
+            all_data.append({
+                "Prompt No.": idx,
+                "Prompt": prompt,
+                "Output": output[:100].replace("\n", " ") + "...",
+                "Root Cause Fixed": root_fixed,
+                "BCR Score": score
+            })
             if score > best_score:
                 best_score = score
-                best_prompt = current_prompt
+                best_prompt = prompt
 
-            print(f"=== Round {round_num} ===")
-            print(f"Prompt: {current_prompt}")
-            print(f"Output: {output}")
-            print(f"Score: {score}")
-
-        return best_prompt, best_score
+        df = pd.DataFrame(all_data)
+        return best_prompt, best_score, df
 
