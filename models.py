@@ -1,3 +1,4 @@
+# models.py
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import os
@@ -22,14 +23,21 @@ class TextModel:
 
         print(f"Model loaded on device: {self.device} (float16 mode)")
 
-    def generate(self, prompt, max_new_tokens=120):
+    def generate(self, prompt, max_new_tokens=120, temperature=0.3):
+        """
+        Generates text for a given prompt.
+        Args:
+            prompt (str): input prompt
+            max_new_tokens (int): max tokens to generate
+            temperature (float): controls creativity (lower is more deterministic)
+        """
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.7,
+                do_sample=True if temperature > 0 else False,
+                temperature=temperature,
                 pad_token_id=self.tokenizer.eos_token_id
             )
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)

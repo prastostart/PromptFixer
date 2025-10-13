@@ -1,42 +1,47 @@
+# optimizer.py
 from models import TextModel
 import pandas as pd
-import random
-import re
+from sentence_transformers import SentenceTransformer, util
 
 class PromptOptimizer:
-    def __init__(self, model_name="mosaicml/mpt-1b-redpajama-200b-dolly"):
+    def __init__(self, model_name="mosaicml/mpt-1b-redpajama-200b-dolly", retriever=None):
         self.model_wrapper = TextModel(model_name)
         self.device = self.model_wrapper.device
+        self.retriever = retriever  # optional retrieval context
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')  # semantic embeddings
+
+        # reference answer embedding for BCR
+        self.reference_text = (
+            "Inflation is the rate at which prices for goods and services increase over time, "
+            "reducing purchasing power. Its effect on investments depends on interest rates, risk, and asset type."
+        )
+        self.ref_embedding = self.embedding_model.encode(self.reference_text, convert_to_tensor=True)
 
     def score_bcr(self, output_text):
         """
-        A very simple proxy for 'BCR' (Balance-Context Relevance).
-        Higher score if answer includes financial keywords.
+        Semantic BCR: cosine similarity between output and reference answer.
+        Returns 0-1 score.
         """
-        finance_keywords = ["market", "stock", "investment", "inflation", "returns", "risk", "interest", "economy"]
-        matches = sum(1 for word in finance_keywords if word in output_text.lower())
-        return round(min(1.0, matches / len(finance_keywords) * 2), 3)
-
-    def identify_root_cause(self, output_text):
-        """
-        Heuristic-based root cause analysis — very simplified.
-        """
-        if len(output_text.split()) < 30:
-            return "Too brief or lacks explanation"
-        elif not any(word in output_text.lower() for word in ["example", "for instance", "e.g."]):
-            return "Missing illustrative example"
-        elif "investment" not in output_text.lower():
-            return "Key finance concept missing"
-        else:
-            return "Lacks clarity or precision"
+        out_embedding = self.embedding_model.encode(output_text, convert_to_tensor=True)
+        score = util.cos_sim(out_embedding, self.ref_embedding).item()
+        return round(float(score), 3)
 
     def reflect_on_prompt(self, prompt, root_cause):
         """
-        Self-reflection logic — use root cause to generate refined prompt.
+        Refines prompt with optional retrieved context and root cause.
         """
-        reflection_instruction = f"Refine this financial prompt to fix the issue: {root_cause}."
+        retrieval_text = ""
+        if self.retriever:
+            retrieved_docs = self.retriever.retrieve(prompt)
+            retrieval_text = "\n".join(retrieved_docs)
+
+        reflection_instruction = (
+            f"Refine this financial prompt to fix the issue: {root_cause}. "
+            f"Use factual, concise, on-topic content only. {retrieval_text}"
+        )
         full_prompt = f"{prompt} {reflection_instruction}"
-        new_prompt = self.model_wrapper.generate(full_prompt, max_new_tokens=60)
+
+        new_prompt = self.model_wrapper.generate(full_prompt, max_new_tokens=100, temperature=0.2)
         return new_prompt.strip()
 
     def optimize(self, initial_prompt, num_rounds=1):
@@ -44,35 +49,36 @@ class PromptOptimizer:
         best_prompt = initial_prompt
         best_score = 0.0
 
-        # Generate LLM output for initial prompt
-        initial_output = self.model_wrapper.generate(initial_prompt)
-        initial_score = self.score_bcr(initial_output)
-        print(f"Initial BCR Score: {initial_score}")
+        for round_num in range(1, num_rounds + 1):
+            # optionally add retrieval context
+            retrieval_text = ""
+            if self.retriever:
+                retrieved_docs = self.retriever.retrieve(initial_prompt)
+                retrieval_text = "\n".join(retrieved_docs)
 
-        # Root cause
-        root_cause = self.identify_root_cause(initial_output)
+            full_prompt = f"{initial_prompt} {retrieval_text}"
+            initial_output = self.model_wrapper.generate(full_prompt, temperature=0.2)
+            initial_score = self.score_bcr(initial_output)
+            print(f"Round {round_num} | Initial BCR Score: {initial_score}")
 
-        # Generate 10 refined prompts
-        refined_prompts = []
-        for i in range(10):
-            refined = self.reflect_on_prompt(initial_prompt, root_cause)
-            refined_prompts.append(refined)
+            root_cause = "Lacks clarity or precision"  # simplified heuristic
 
-        # Evaluate each refined prompt
-        for idx, prompt in enumerate(refined_prompts, start=1):
-            output = self.model_wrapper.generate(prompt)
-            score = self.score_bcr(output)
-            root_fixed = root_cause
-            all_data.append({
-                "Prompt No.": idx,
-                "Prompt": prompt,
-                "Output": output[:100].replace("\n", " ") + "...",
-                "Root Cause Fixed": root_fixed,
-                "BCR Score": score
-            })
-            if score > best_score:
-                best_score = score
-                best_prompt = prompt
+            refined_prompts = [self.reflect_on_prompt(initial_prompt, root_cause) for _ in range(10)]
+
+            for idx, prompt in enumerate(refined_prompts, start=1):
+                output = self.model_wrapper.generate(prompt, temperature=0.2)
+                score = self.score_bcr(output)
+                all_data.append({
+                    "Round": round_num,
+                    "Prompt No.": idx,
+                    "Prompt": prompt,
+                    "Output": output[:200].replace("\n", " ") + "...",
+                    "Root Cause Fixed": root_cause,
+                    "BCR Score": score
+                })
+                if score > best_score:
+                    best_score = score
+                    best_prompt = prompt
 
         df = pd.DataFrame(all_data)
         return best_prompt, best_score, df
