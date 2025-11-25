@@ -1,38 +1,64 @@
-# models.py
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import os
 
 class TextModel:
-    def __init__(self, model_name="mosaicml/mpt-1b-instruct"):
+    def __init__(self, model_name="meta-llama/Llama-3.2-1B-Instruct"):
         print(f"Loading model: {model_name}")
 
-        # Use MPS if available, else CPU
-        self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        # Detect hardware
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
 
-        # Optional: offload directory for large models
-        offload_dir = "./offload"
-        os.makedirs(offload_dir, exist_ok=True)
+        # Load Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        # Load Model
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map="auto",                # automatically use MPS/CPU
-            torch_dtype=torch.float16,        # reduce memory usage
-            low_cpu_mem_usage=True,           # helps on Mac
+            device_map="auto",
+            torch_dtype=torch.bfloat16, # Llama 3 prefers bfloat16
+            low_cpu_mem_usage=True,
             trust_remote_code=True
         )
+        
+        self.model.eval()
+        print(f"Model loaded on device: {self.device}")
 
-        print(f"Model loaded on device: {self.device} (float16 mode)")
+    def generate(self, prompt, max_new_tokens=150, temperature=0.7, system_instruction=None):
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+        
+        messages.append({"role": "user", "content": prompt})
 
-    def generate(self, prompt, max_new_tokens=120, temperature=0.3):
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        # Apply Chat Template
+        input_text = self.tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        
+        inputs = self.tokenizer(input_text, return_tensors="pt").to(self.device)
+
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=True if temperature > 0 else False,
+                do_sample=True,
                 temperature=temperature,
-                pad_token_id=self.tokenizer.eos_token_id
+                top_p=0.9,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
             )
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+        generated_text = self.tokenizer.decode(
+            outputs[0][inputs.input_ids.shape[1]:], 
+            skip_special_tokens=True
+        )
+        
+        return generated_text.strip()

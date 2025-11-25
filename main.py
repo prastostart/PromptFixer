@@ -1,49 +1,31 @@
-# main.py
-from optimizer import PromptOptimizer, plot_bcr_scores
+from optimizer import PromptOptimizer
 from logger import init_logger
 import pandas as pd
 
 def main():
-    # Initialize logging
     init_logger()
+    optimizer = PromptOptimizer(model_name="meta-llama/Llama-3.2-1B-Instruct")
+    
+    initial_prompt = input("Enter prompt: ") or "Explain quantum physics."
+    rounds = 3
+    
+    print(f"\n--- Starting Diagnostic Optimization ({rounds} rounds) ---")
+    
+    best_prompt = ""
+    best_score = 0
+    df = pd.DataFrame()
 
-    model_name = "mosaicml/mpt-1b-redpajama-200b-dolly"
-    optimizer = PromptOptimizer(model_name=model_name)
+    for step_data in optimizer.optimize(initial_prompt, num_rounds=rounds):
+        if step_data["type"] == "progress":
+            print(f"[AGENT] {step_data['message']}")
+        elif step_data["type"] == "result":
+            best_prompt = step_data["best_prompt"]
+            best_score = step_data["best_score"]
+            df = pd.DataFrame(step_data["all_candidates"])
 
-    # ----------- CHANGED -------------
-    # 1. Dynamic user input instead of hardcoded prompt
-    initial_prompt = input("Enter your prompt (default: 'Explain how inflation affects investment returns.'): ") \
-                     or "Explain how inflation affects investment returns."
-
-    # 2. Dynamic number of optimization rounds
-    num_rounds = input("Enter number of optimization rounds (default 5): ")
-    try:
-        num_rounds = int(num_rounds)
-    except ValueError:
-        num_rounds = 5
-
-    print(f"\n=== Initial Prompt ===\n{initial_prompt}")
-    print(f"Running {num_rounds} optimization rounds...\n")
-    # ---------------------------------
-
-    # Run the optimizer
-    best_prompt, best_score, df = optimizer.optimize(initial_prompt=initial_prompt, num_rounds=num_rounds)
-
-    # Display results
-    print("\n=== Generated Prompts and Scores ===")
-    print(df.to_string(index=False))
-
-    print("\n===== FINAL RESULTS =====")
-    print(f"Best Prompt:\n{best_prompt}")
-    print(f"Best Score: {best_score}")
-
-    # Plot scores
-    plot_bcr_scores(df)
-
-    # Save CSV logs
-    df.to_csv("prompt_logs.csv", index=False)
-    with open("best_prompts.csv", "w", encoding="utf-8") as f:
-        f.write(f"best_prompt,best_score\n{best_prompt},{best_score}\n")
+    print("\n=== FINAL DIAGNOSIS & PRESCRIPTION ===")
+    print(f"Best Prompt Found (Score {best_score:.4f}):")
+    print(best_prompt)
 
 if __name__ == "__main__":
     main()

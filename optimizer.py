@@ -1,125 +1,200 @@
-# optimizer.py
 from models import TextModel
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
 import re
-import matplotlib.pyplot as plt
 
 class PromptOptimizer:
-    def __init__(self, model_name="distilgpt2", retriever=None):
-        # Use small model for fast demo
+    def __init__(self, model_name="meta-llama/Llama-3.2-1B-Instruct"):
         self.model_wrapper = TextModel(model_name)
-        self.device = self.model_wrapper.device
-        self.retriever = retriever
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        
+        self.strategy_map = {
+            "Off-Topic": "Constraints_Injection",
+            "Repetitive": "Anti_Loop_Refinement",
+            "Vague": "CO_STAR_Framework",     
+            "Illogical": "Explicit_CoT",       
+            "Missing Details": "Synthetic_Few_Shot", 
+            "Wrong Tone": "Persona_Adoption"
+        }
 
-    # ---------------- Embedding & Similarity ----------------
+    # ---------------- Metrics ----------------
     def embed(self, text: str):
         return self.embedding_model.encode(text, convert_to_tensor=True)
 
     def cosine_sim(self, a, b):
         return float(util.cos_sim(a, b).item())
 
-    # ---------------- Penalties ----------------
     def drift_penalty(self, prompt, output):
         return 1 - self.cosine_sim(self.embed(prompt), self.embed(output))
 
     def repetition_penalty(self, text):
         sentences = [s.strip() for s in re.split(r"[.!?]", text) if s.strip()]
-        if len(sentences) < 2:
-            return 0.0
+        if len(sentences) < 2: return 0.0
         freq = {}
-        for s in sentences:
-            freq[s] = freq.get(s, 0) + 1
+        for s in sentences: freq[s] = freq.get(s, 0) + 1
         probs = np.array(list(freq.values())) / len(sentences)
         entropy = -np.sum(probs * np.log2(probs))
-        return 1 - entropy / np.log2(len(sentences))
+        norm_entropy = entropy / np.log2(len(sentences)) if len(sentences) > 1 else 1
+        return 1 - norm_entropy
 
-    def hallucination_penalty(self, prompt, output):
-        prompt_tokens = set(prompt.lower().split())
-        output_tokens = set(output.lower().split())
-        hallucinated = [t for t in output_tokens if t not in prompt_tokens]
-        return min(len(hallucinated) * 0.05, 0.5)
+    # ---------------- RCA Module ----------------
+    def diagnose_root_cause(self, prompt, output, stats):
+        if stats["drift"] > 0.4: return "Off-Topic"
+        if stats["repetition"] > 0.3: return "Repetitive"
+        if len(output.split()) < 30: return "Missing Details"
 
-    # ---------------- BCR Scoring ----------------
-    def compute_bcr(self, ref_output, new_output):
-        if not ref_output.strip():
-            return 0.5  # neutral score first round
-        return round(max(0, min(1, 1 - self.cosine_sim(self.embed(ref_output), self.embed(new_output)))), 4)
+        system_prompt = "You are a harsh critic. Identify the fatal flaw in the Output."
+        user_query = (
+            f"Prompt: {prompt}\nOutput: {output}\n\n"
+            "Choose ONE flaw: [Vague, Illogical, Wrong Tone]. "
+            "Return ONLY the word."
+        )
+        try:
+            diagnosis = self.model_wrapper.generate(
+                prompt=user_query, system_instruction=system_prompt, 
+                max_new_tokens=10, temperature=0.1
+            ).strip().replace(".", "")
+            valid = ["Vague", "Illogical", "Wrong Tone"]
+            if any(x in diagnosis for x in valid): return diagnosis
+            return "Vague"
+        except:
+            return "Vague"
 
-    def compute_final_score(self, prompt, ref_output, output):
-        base_bcr = self.compute_bcr(ref_output, output)
+    def compute_final_score(self, prompt, output, initial_bad_output):
+        if not initial_bad_output: dist = 0.5
+        else: dist = 1 - self.cosine_sim(self.embed(initial_bad_output), self.embed(output))
+
         drift = self.drift_penalty(prompt, output)
-        hall = self.hallucination_penalty(prompt, output)
         rep = self.repetition_penalty(output)
-        # Reduced weights for demo
-        final = 0.7*base_bcr + 0.3*(1-(0.2*drift + 0.1*hall + 0.1*rep))
-
+        
+        quality_score = 1 - (0.3*drift + 0.5*rep) 
+        final = (0.4 * dist) + (0.6 * quality_score)
+        
         return {
             "final_score": round(max(0, min(1, final)), 4),
-            "base_bcr": base_bcr,
-            "penalties": {"drift": round(drift,2), "hallucination": round(hall,2), "repetition": round(rep,2)}
+            "penalties": {"drift": round(drift,2), "repetition": round(rep,2)}
         }
 
-    # ---------------- Root Cause ----------------
-    def determine_root_cause(self, prompt, ref_output, output):
-        penalties = self.compute_final_score(prompt, ref_output, output)["penalties"]
-        causes = []
-        if penalties["drift"] > 0.3: causes.append("off-topic")
-        if penalties["hallucination"] > 0.2: causes.append("unsupported facts")
-        if penalties["repetition"] > 0.25: causes.append("repetitive")
-        if not causes: causes.append("needs clarity")
-        return "; ".join(causes)
+    # ---------------- Strategies ----------------
+    def apply_strategy(self, current_prompt, root_cause, strategy):
+        candidates = []
+        
+        base_instruction = ""
+        if strategy == "CO_STAR_Framework":
+            base_instruction = "Rewrite using CO-STAR format (Context, Objective, Style, Audience, Response)."
+        elif strategy == "Explicit_CoT":
+            base_instruction = "Rewrite adding strict 'Step-by-Step' reasoning requirements."
+        elif strategy == "Synthetic_Few_Shot":
+            base_instruction = "Generate 2 relevant examples and append them to the prompt."
+        elif strategy == "Persona_Adoption":
+            base_instruction = "Adopt a specific expert persona and rewrite the prompt from that perspective."
+        elif strategy == "Constraints_Injection":
+            base_instruction = "Add a list of 'Negative Constraints' (what NOT to do)."
+        else:
+            base_instruction = "Rewrite to be more concise and authoritative."
 
-    # ---------------- Prompt Refinement ----------------
-    def reflect_on_prompt(self, prompt, root_cause):
-        # For demo: just append a note
-        return f"{prompt} [refined to fix: {root_cause}]"
+        flavors = [
+            "Flavor 1: Extremely Concise and Strict.",
+            "Flavor 2: Detailed, Descriptive, and Expansive.",
+            "Flavor 3: Unconventional, Creative, and 'Out of the Box'."
+        ]
 
-    # ---------------- Optimization Loop ----------------
-    def optimize(self, initial_prompt, num_rounds=2, num_candidates=3):
+        for flavor in flavors:
+            full_instruction = f"{base_instruction}\n\nConstraint: {flavor}\nMake this version distinct."
+            new_prompt = self.model_wrapper.generate(
+                prompt=f"Original Prompt: {current_prompt}\n\nTask: {full_instruction}", 
+                system_instruction="You are a creative Prompt Engineering Architect.", 
+                temperature=1.0, 
+                max_new_tokens=250
+            )
+            clean_prompt = new_prompt.replace('"', '').replace("Original Prompt:", "").strip()
+            candidates.append(clean_prompt)
+            
+        return candidates
+
+    # ---------------- Pipeline ----------------
+    def optimize(self, initial_prompt, num_rounds=3):
         all_data = []
-        best_prompt = initial_prompt
-        ref_output = self.model_wrapper.generate(initial_prompt, max_new_tokens=50, temperature=0.3)
-        best_score = 0.0
+        yield {"type": "progress", "message": "Generating baseline..."}
+        
+        # Initial Setup
+        best_output = self.model_wrapper.generate(initial_prompt, max_new_tokens=100)
+        baseline_anchor = best_output
+        
+        # Current "Working" Best (used for evolution)
+        current_best_prompt = initial_prompt
+        current_best_score = 0.0
+        current_best_output = best_output
 
-        for rnd in range(1, num_rounds+1):
-            print(f"=== Round {rnd} ===")
-            root_cause = self.determine_root_cause(best_prompt, ref_output, ref_output)
-            candidates = [self.reflect_on_prompt(best_prompt, root_cause)+f" [{i}]" for i in range(1,num_candidates+1)]
+        # GLOBAL Best (The absolute peak performance seen so far)
+        global_best = {
+            "prompt": initial_prompt,
+            "score": 0.0,
+            "output": best_output,
+            "round": 0
+        }
 
-            for idx, prompt in enumerate(candidates,1):
-                output = self.model_wrapper.generate(prompt, max_new_tokens=50, temperature=0.3)
-                score_data = self.compute_final_score(prompt, ref_output, output)
-                score = score_data["final_score"]
-                print(f"Candidate {idx}: score={score}, prompt='{prompt[:30]}...'")
-                all_data.append({
-                    "Round": rnd,
-                    "Prompt No.": idx,
-                    "Prompt": prompt,
-                    "Output": output[:100].replace("\n"," ")+"...",
-                    "Final Score": score,
+        for rnd in range(1, num_rounds + 1):
+            yield {"type": "progress", "message": f"=== Round {rnd} ==="}
+            
+            # Diagnose based on the current working best
+            current_stats = self.compute_final_score(current_best_prompt, current_best_output, baseline_anchor)
+            root_cause = self.diagnose_root_cause(current_best_prompt, current_best_output, current_stats["penalties"])
+            prescribed_strategy = self.strategy_map.get(root_cause, "CO_STAR_Framework")
+            
+            yield {"type": "progress", "message": f"Diagnosis: {root_cause} -> Strategy: {prescribed_strategy}"}
+
+            # Generate Candidates
+            candidates = self.apply_strategy(current_best_prompt, root_cause, prescribed_strategy)
+
+            round_candidates = []
+            for idx, cand_prompt in enumerate(candidates, 1):
+                yield {"type": "progress", "message": f"Testing variation {idx}..."}
+                
+                cand_output = self.model_wrapper.generate(cand_prompt, max_new_tokens=120)
+                score_data = self.compute_final_score(cand_prompt, cand_output, baseline_anchor)
+                
+                row = {
+                    "Round": rnd, "Prompt No.": idx, "Strategy": prescribed_strategy,
+                    "Prompt": cand_prompt, "Output": cand_output, 
+                    "Final Score": score_data["final_score"],
                     "Penalties": score_data["penalties"]
-                })
-                if score > best_score:
-                    best_score = score
-                    best_prompt = prompt
-                    ref_output = output
+                }
+                all_data.append(row)
+                round_candidates.append(row)
 
-        return best_prompt, best_score, pd.DataFrame(all_data)
+                # Check if this specific candidate is a new GLOBAL BEST
+                if score_data["final_score"] > global_best["score"]:
+                    global_best = {
+                        "prompt": cand_prompt,
+                        "score": score_data["final_score"],
+                        "output": cand_output,
+                        "round": rnd
+                    }
 
-# ---------------- Plot ----------------
-def plot_bcr_scores(df):
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(8,5))
-    for r in df["Round"].unique():
-        subset = df[df["Round"]==r]
-        plt.plot(subset["Prompt No."], subset["Final Score"], marker="o", label=f"Round {r}")
-    plt.xlabel("Candidate Prompt No.")
-    plt.ylabel("Score")
-    plt.title("BCR Scores Across Rounds")
-    plt.ylim(0,1)
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+            # Selection for NEXT round's parent
+            # We sort to find the winner of THIS round
+            round_candidates.sort(key=lambda x: x["Final Score"], reverse=True)
+            round_winner = round_candidates[0]
+            
+            # Logic: We update the 'current_best' (parent for next round) 
+            # only if it's decent. If it crashed hard, we might stick to previous,
+            # but usually we want to keep evolving.
+            current_best_prompt = round_winner["Prompt"]
+            current_best_output = round_winner["Output"]
+            
+            if round_winner["Final Score"] >= current_best_score:
+                current_best_score = round_winner["Final Score"]
+                yield {"type": "progress", "message": f"Round {rnd} Winner Score: {current_best_score:.4f}"}
+            else:
+                yield {"type": "progress", "message": f"Score dropped this round. (Best: {global_best['score']:.4f})"}
+
+        # === FINAL RESULT IS THE GLOBAL PEAK ===
+        # Even if Round 5 crashed, we return the winner from Round X
+        yield {
+            "type": "result", 
+            "best_prompt": global_best["prompt"], 
+            "best_score": global_best["score"],
+            "all_candidates": pd.DataFrame(all_data).fillna(0).to_dict(orient="records")
+        }
