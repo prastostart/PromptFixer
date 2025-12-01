@@ -1,21 +1,27 @@
 from optimizer import PromptOptimizer
-from logger import init_logger
+# from logger import init_logger # Uncomment if you actually have a logger.py
+
 import pandas as pd
 
 def main():
-    init_logger()
-    optimizer = PromptOptimizer(model_name="meta-llama/Llama-3.2-1B-Instruct")
+    # init_logger() 
+    
+    # CHANGE 1: No need to pass model_name, TextModel handles Qwen GGUF internally
+    optimizer = PromptOptimizer()
     
     initial_prompt = input("Enter prompt: ") or "Explain quantum physics."
-    rounds = 3
     
-    print(f"\n--- Starting Diagnostic Optimization ({rounds} rounds) ---")
+    # Note: Rounds are currently hardcoded to 5 in optimizer.py. 
+    # To change this, you would need to update the optimize() method definition.
+    print(f"\n--- Starting Diagnostic Optimization ---")
     
     best_prompt = ""
     best_score = 0
     df = pd.DataFrame()
 
-    for step_data in optimizer.optimize(initial_prompt, num_rounds=rounds):
+    # CHANGE 2: Removed 'num_rounds=rounds' because your optimize() method 
+    # defined in the first prompt does not accept arguments other than initial_prompt.
+    for step_data in optimizer.optimize(initial_prompt):
         if step_data["type"] == "progress":
             print(f"[AGENT] {step_data['message']}")
         elif step_data["type"] == "result":

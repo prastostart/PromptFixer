@@ -1,64 +1,67 @@
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import os
+from llama_cpp import Llama
+from huggingface_hub import hf_hub_download
 
 class TextModel:
-    def __init__(self, model_name="meta-llama/Llama-3.2-1B-Instruct"):
-        print(f"Loading model: {model_name}")
-
-        # Detect hardware
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        elif torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
-
-        # Load Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        # Load Model
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map="auto",
-            torch_dtype=torch.bfloat16, # Llama 3 prefers bfloat16
-            low_cpu_mem_usage=True,
-            trust_remote_code=True
-        )
+    def __init__(self, model_name=None):
+        # Configuration for the Qwen 7B GGUF Model
+        repo_id = "bartowski/Qwen2.5-7B-Instruct-GGUF"
+        filename = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
         
-        self.model.eval()
-        print(f"Model loaded on device: {self.device}")
+        print(f"Initializing Qwen 2.5 7B (Quantized)...")
+        model_path = f"./models_cache/{filename}"
+        
+        # Auto-download if it doesn't exist
+        if not os.path.exists(model_path):
+            print("Model not found locally. Downloading...")
+            try:
+                model_path = hf_hub_download(
+                    repo_id=repo_id, 
+                    filename=filename, 
+                    local_dir="./models_cache"
+                )
+            except Exception as e:
+                print(f"CRITICAL ERROR: Could not download model. {e}")
+                raise e
 
-    def generate(self, prompt, max_new_tokens=150, temperature=0.7, system_instruction=None):
+        # --- KEY FIXES HERE ---
+        # n_ctx=8192: Increases the "memory" of the conversation. 
+        #             The default is too small for the Judge prompts.
+        # n_batch=512: Optimizes processing speed on Apple Silicon.
+        self.llm = Llama(
+            model_path=model_path,
+            n_gpu_layers=-1,      # Offload all to Metal (GPU)
+            n_ctx=8192,           # INCREASED from 4096 (Prevents -1 error)
+            n_batch=512,          # Batch size for prompt processing
+            verbose=False         # Set to True if you want to see debug stats
+        )
+        print("Model loaded on Apple Silicon (Metal) successfully.")
+
+    def generate(self, prompt, max_new_tokens=200, temperature=0.7, system_instruction=None):
         messages = []
+        
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
         
         messages.append({"role": "user", "content": prompt})
 
-        # Apply Chat Template
-        input_text = self.tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-        
-        inputs = self.tokenizer(input_text, return_tensors="pt").to(self.device)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
+        try:
+            # Create completion
+            output = self.llm.create_chat_completion(
+                messages=messages,
+                max_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=0.9,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id
             )
+            return output['choices'][0]['message']['content'].strip()
             
-        generated_text = self.tokenizer.decode(
-            outputs[0][inputs.input_ids.shape[1]:], 
-            skip_special_tokens=True
-        )
-        
-        return generated_text.strip()
+        except ValueError as e:
+            # This catches context limit errors specifically
+            if "exceeds context" in str(e) or "llama_decode" in str(e):
+                print(f"ERROR: Context Limit Hit. (Prompt len: {len(prompt)})")
+                return "[Error: Input too long for context window]"
+            print(f"Generation Error: {e}")
+            return "Error generating response."
+        except Exception as e:
+            print(f"CRITICAL Generation Error: {e}")
+            return "Error."

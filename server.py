@@ -19,9 +19,10 @@ app.add_middleware(
 
 class PromptRequest(BaseModel):
     prompt: str
-    num_rounds: int = 3
 
-optimizer = PromptOptimizer(model_name="meta-llama/Llama-3.2-1B-Instruct")
+# CHANGE: Initialize without arguments. 
+# The new models.py automatically loads the Qwen GGUF model.
+optimizer = PromptOptimizer()
 
 @app.get("/")
 def read_root():
@@ -32,8 +33,8 @@ def read_root():
 @app.post("/optimize")
 def optimize_endpoint(request: PromptRequest):
     def iter_response():
-        # Fully automated loop
-        for step_data in optimizer.optimize(request.prompt, num_rounds=request.num_rounds):
+        # This matches the signature in optimizer.py
+        for step_data in optimizer.optimize(request.prompt):
             yield json.dumps(step_data) + "\n"
 
     return StreamingResponse(iter_response(), media_type="application/x-ndjson")
