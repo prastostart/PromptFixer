@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RCA Prompt Optimizer (Qwen 7B)</title>
+<title>RCA Prompt Optimizer (RAG + Memory)</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 950px; margin: auto; padding: 20px; background-color: #f4f6f8; color: #333; }
@@ -14,18 +14,25 @@
 
     /* Inputs */
     label { font-weight: 700; margin-bottom: 8px; display: block; color: #34495e; }
-    textarea { width: 100%; padding:15px; border:1px solid #ddd; border-radius:8px; font-family: inherit; font-size: 15px; resize: vertical; box-sizing: border-box; transition: border 0.2s; }
+    textarea { width: 100%; padding:15px; border:1px solid #ddd; border-radius:8px; font-family: inherit; font-size: 15px; resize: vertical; box-sizing: border-box; transition: border 0.2s; margin-bottom: 15px; }
     textarea:focus { border-color: #3498db; outline: none; }
     
-    button { background-color: #2c3e50; color: white; border: none; padding: 15px; cursor: pointer; border-radius: 8px; font-size: 16px; font-weight: 600; width: 100%; margin-top:20px; transition: background 0.2s; }
+    button { background-color: #2c3e50; color: white; border: none; padding: 15px; cursor: pointer; border-radius: 8px; font-size: 16px; font-weight: 600; width: 100%; transition: background 0.2s; }
     button:hover { background-color: #34495e; }
     button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+
+    /* RAG UI */
+    .rag-panel { background: #f0f8ff; border: 1px dashed #3498db; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    .rag-controls { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+    .rag-btn { padding: 8px 15px; width: auto; margin-top: 0; font-size: 14px; }
+    .rag-clear { background: #e74c3c; }
+    .rag-clear:hover { background: #c0392b; }
 
     /* Log Box */
     #log-container { margin-top: 25px; background: #1e272e; color: #00d2d3; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; height: 180px; overflow-y: auto; font-size: 13px; display: none; border-left: 5px solid #ff9f43; line-height: 1.4; }
     .log-line { margin: 4px 0; border-bottom: 1px solid #353b48; padding-bottom: 4px; }
 
-    /* Results */
+    /* Results Area */
     #results-area { margin-top: 35px; }
     
     /* The "Winner" Box */
@@ -34,9 +41,24 @@
     
     .prompt-label { color:#27ae60; text-transform:uppercase; font-size:0.75em; letter-spacing:1px; font-weight:800; margin-bottom:5px; display:block; }
     
-    .final-prompt-box { background:rgba(255,255,255,0.7); padding:12px; border-radius:6px; margin-bottom:20px; border:1px solid #a5d6a7; color:#2c3e50; font-weight:600; font-size: 1.05em; }
+    .final-prompt-box { background:rgba(255,255,255,0.7); padding:12px; border-radius:6px; margin-bottom:20px; border:1px solid #a5d6a7; color:#2c3e50; font-weight:600; font-size: 1.05em; white-space: pre-wrap; word-wrap: break-word; }
     
-    .final-output-box { background:#fff; padding:15px; border-radius:6px; border:1px solid #c8e6c9; font-family:'Georgia', serif; line-height:1.6; color:#444; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    /* --- CSS FIX FOR OUTPUT BOX --- */
+    .final-output-box { 
+        background:#fff; 
+        padding:15px; 
+        border-radius:6px; 
+        border:1px solid #c8e6c9; 
+        font-family:'Georgia', serif; 
+        line-height:1.6; 
+        color:#444; 
+        max-height: 400px; 
+        overflow-y: auto; 
+        white-space: pre-wrap;       /* Preserves line breaks */
+        word-wrap: break-word;       /* Forces long words to wrap */
+        overflow-wrap: break-word;   /* Modern standard */
+        word-break: break-word;      /* Aggressive wrapping for code */
+    }
 
     /* History Cards */
     .round-card { background: #fff; border: 1px solid #e0e0e0; padding: 20px; margin-bottom: 20px; border-radius: 10px; }
@@ -47,17 +69,44 @@
     .score-high { background: #27ae60; }
     
     .candidate-row { margin-top:12px; border-bottom:1px solid #f5f5f5; padding-bottom:12px; }
-    .candidate-output { font-size:0.9em; margin-top:6px; color:#666; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    
+    /* --- CSS FIX FOR HISTORY OUTPUTS --- */
+    .candidate-output { 
+        font-size:0.9em; 
+        margin-top:6px; 
+        color:#666; 
+        font-style: italic; 
+        white-space: pre-wrap; 
+        word-wrap: break-word; 
+        overflow-wrap: break-word;
+    }
 </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>Automated RCA Optimizer (Qwen 7B)</h1>
-    <p class="subtitle">Diagnoses root causes, creates strategies, and validates via Chain-of-Thought grading.</p>
+    <h1>Automated RCA Optimizer (RAG + Memory)</h1>
+    <p class="subtitle">Diagnoses root causes, retrieves context, remembers strategies, and optimizes prompts.</p>
+    
+    <!-- RAG Section -->
+    <div class="rag-panel">
+        <strong>📚 Knowledge Base (RAG)</strong>
+        <div class="rag-controls">
+            <input type="file" id="docUpload" />
+            <button class="rag-btn" onclick="uploadDoc()">Upload Doc</button>
+            <button class="rag-btn rag-clear" onclick="clearDb()">Clear DB</button>
+        </div>
+        <div style="margin-top:10px;">
+            <label style="display:flex; align-items:center; cursor:pointer;">
+                <input type="checkbox" id="useRag" style="width:20px; height:20px; margin-right:10px;">
+                Enable Retrieval Augmented Generation
+            </label>
+        </div>
+        <div id="uploadStatus" style="font-size:0.9em; color:#27ae60; margin-top:5px;"></div>
+    </div>
 
-    <label for="initialPrompt">Enter your initial prompt:</label>
-    <textarea id="initialPrompt" rows="3" placeholder="e.g., Explain quantum entanglement like a pirate."></textarea>
+    <label>Target Prompt:</label>
+    <textarea id="initialPrompt" rows="3" placeholder="e.g., Explain the uploaded document's conclusion."></textarea>
     
     <button id="btnStart" onclick="startOptimization()">Run Diagnostic Optimization</button>
 
@@ -67,16 +116,43 @@
 </div>
 
 <script>
+    async function uploadDoc() {
+        const fileInput = document.getElementById('docUpload');
+        if(!fileInput.files[0]) return alert("Select a file");
+        
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+        
+        document.getElementById("uploadStatus").innerText = "Uploading & Embedding...";
+        
+        try {
+            await fetch("/upload", {method: "POST", body: formData});
+            document.getElementById("uploadStatus").innerText = "✅ Document Ingested!";
+        } catch (e) {
+            document.getElementById("uploadStatus").innerText = "❌ Upload Failed: " + e;
+        }
+    }
+
+    async function clearDb() {
+        try {
+            await fetch("/reset_db", {method: "POST"});
+            document.getElementById("uploadStatus").innerText = "🗑 Database Cleared.";
+        } catch (e) {
+            alert("Error clearing DB");
+        }
+    }
+
     async function startOptimization() {
         const input = document.getElementById("initialPrompt");
         if (!input.value) return alert("Please enter a prompt.");
         
-        // UI Reset
+        const useRag = document.getElementById("useRag").checked;
         const btn = document.getElementById("btnStart");
         const logDiv = document.getElementById("log-container");
         const resDiv = document.getElementById("results-area");
         const plotDiv = document.getElementById("plot");
         
+        // UI Reset
         btn.disabled = true;
         btn.innerText = "Running Diagnostics...";
         logDiv.style.display = "block";
@@ -88,9 +164,7 @@
             const response = await fetch("/optimize", {
                 method: "POST",
                 headers: {"Content-Type":"application/json"},
-                body: JSON.stringify({
-                    prompt: input.value
-                })
+                body: JSON.stringify({ prompt: input.value, use_rag: useRag })
             });
 
             const reader = response.body.getReader();
@@ -103,7 +177,7 @@
                 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split("\n");
-                buffer = lines.pop(); 
+                buffer = lines.pop(); // Keep the last partial line in buffer
 
                 for (const line of lines) {
                     if (!line.trim()) continue;
@@ -120,7 +194,7 @@
                         else if (data.type === "result") {
                             renderFinalResults(data);
                         }
-                    } catch (e) { console.error(e); }
+                    } catch (e) { console.error("JSON Parse Error", e); }
                 }
             }
         } catch (err) {
@@ -143,14 +217,10 @@
                 </div>
 
                 <span class="prompt-label">The Winning Prompt</span>
-                <div class="final-prompt-box">
-                    ${data.best_prompt}
-                </div>
+                <div class="final-prompt-box">${data.best_prompt}</div>
 
                 <span class="prompt-label">The AI Output</span>
-                <div class="final-output-box">
-                    ${data.best_output}
-                </div>
+                <div class="final-output-box">${data.best_output}</div>
             </div>
             
             <h3 style="color:#34495e; margin-bottom:20px;">Detailed Diagnostic Logs</h3>
@@ -189,7 +259,11 @@
         });
 
         resDiv.innerHTML = html;
-        plotData(data.all_candidates);
+        
+        // Render Plot if Plotly is loaded
+        if (typeof Plotly !== 'undefined') {
+            plotData(data.all_candidates);
+        }
     }
 
     function plotData(candidates) {

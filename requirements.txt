@@ -5,3 +5,6 @@ sentence-transformers
 faiss-cpu
 prettytable
 fastapi
+chromadb
+pypdf
+python-multipart
